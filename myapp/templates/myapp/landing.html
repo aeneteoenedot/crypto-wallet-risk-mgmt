@@ -1,0 +1,297 @@
+{% extends "myapp/base.html" %} 
+{% load static %} 
+{% block content %}
+<script>
+    // Adjust DataTable columns on window resize for responsive layout
+    $(window).on("resize", function () {
+        $.fn.dataTable.tables({ visible: true, api: true }).columns.adjust();
+    });
+
+    $(document).ready(function () {
+        // === Initialize Main Data Table ===
+        $("#datatable").DataTable({
+            scrollY: 200,
+            autoWidth: true,
+            lengthMenu: [
+                [60, 90, 120, -1],
+                [60, 90, 120, "All"],
+            ],
+            order: [[1, "desc"]],
+            paging: true,
+            ordering: true,
+            info: true,
+            searching: true,
+            scrollCollapse: true,
+            columnDefs: [{ orderable: true, targets: 0 }],
+        });
+
+        // === Initialize Portfolio Metrics Table (minimal features) ===
+        $("#metrics-table").DataTable({
+            scrollY: 50,
+            autoWidth: false,
+            order: [[1, "desc"]],
+            paging: false,
+            ordering: false,
+            info: false,
+            searching: false,
+            scrollCollapse: false,
+            columnDefs: [{ orderable: false, targets: 0 }],
+            destroy: true, // Allow re-initialization
+        });
+
+        // === Handle Portfolio Weights Form Submission ===
+        $("#weights-form").on("submit", function (e) {
+            e.preventDefault();
+
+            // Validate all weight inputs are filled and numeric
+            var valid = true;
+            $('#weights-form input[name^="weight"]').each(function () {
+                if ($(this).val() === "" || isNaN(parseFloat($(this).val()))) {
+                    valid = false;
+                    $(this).addClass("is-invalid");
+                } else {
+                    $(this).removeClass("is-invalid");
+                }
+            });
+            if (!valid) {
+                alert("Please enter valid weights for all assets.");
+                return;
+            }
+
+            // Convert percentage weights to decimals before sending via AJAX
+            var $form = $(this);
+            var data = $form.serializeArray();
+            data.forEach(function (field) {
+                if (field.name.startsWith("weight")) {
+                    var val = parseFloat(field.value);
+                    if (!isNaN(val)) {
+                        field.value = val / 100;
+                    }
+                }
+            });
+
+            // Send AJAX POST request to server with form data
+            $.ajax({
+                url: "{% url 'handle_form_submission' %}",
+                type: "POST",
+                data: $.param(data),
+                headers: { "X-CSRFToken": "{{ csrf_token }}" },
+                dataType: "json",
+                success: function (response) {
+                    // === Update Portfolio Metrics Table ===
+                    const row = response.data || {};
+                    const $table = $("#metrics-table");
+                    const $tbody = $table.find("tbody");
+
+                    // Destroy DataTable before modifying DOM to avoid conflicts
+                    if ($.fn.DataTable.isDataTable($table)) {
+                        $table.DataTable().destroy();
+                    }
+
+                    $tbody.empty();
+
+                    // Populate metrics table with new data or show "No data"
+                    if (Object.keys(row).length > 0) {
+                        $tbody.append(
+                            "<tr>" +
+                            "<td>" +
+                            (row.portfolio_return ?? "—") +
+                            "</td>" +
+                            "<td>" +
+                            (row.portfolio_volatility ?? "—") +
+                            "</td>" +
+                            "<td>" +
+                            (row.parametric_var_95 ?? "—") +
+                            "</td>" +
+                            "<td>" +
+                            (row.historical_var_95 ?? "—") +
+                            "</td>" +
+                            "<td>" +
+                            (row.stressed_scenario ?? "—") +
+                            "</td>" +
+                            "</tr>"
+                        );
+
+                        // Update Sharpe Ratio box
+                        $("#sharpe-ratio-value").text(row.sharpe_ratio !== undefined && row.sharpe_ratio !== null ? row.sharpe_ratio : "—");
+                    } else {
+                        $tbody.append(
+                            '<tr><td colspan="5" class="text-center">No data returned.</td></tr>'
+                        );
+                    }
+
+                    // Reinitialize DataTable after updating DOM
+                    $table.DataTable({
+                        scrollY: 50,
+                        autoWidth: false,
+                        paging: false,
+                        ordering: false,
+                        info: false,
+                        searching: false,
+                        scrollCollapse: false,
+                        columnDefs: [{ orderable: false, targets: "_all" }],
+                    });
+
+                    // === Update EWMA correlation Matrix Table ===
+                    const covMatrix = row.ewma_correlation_matrix;
+                    const $covTable = $("#correlation-table");
+                    const $covHeader = $("#correlation-header");
+                    const $covBody = $covTable.find("tbody");
+
+                    // Destroy DataTable if already initialized
+                    if ($.fn.DataTable.isDataTable($covTable)) {
+                        $covTable.DataTable().destroy();
+                    }
+
+                    // Remove previous dynamic headers and clear table body
+                    $covHeader.find("th:gt(0)").remove();
+                    $covBody.empty();
+
+                    if (covMatrix && typeof covMatrix === "object") {
+                        const assets = Object.keys(covMatrix);
+
+                        // Add dynamic column headers for each asset
+                        assets.forEach((asset) => {
+                            $covHeader.append(`<th>${asset}</th>`);
+                        });
+
+                        // Build each row for the correlation matrix
+                        assets.forEach((rowAsset) => {
+                            let rowHtml = `<tr><th>${rowAsset}</th>`;
+                            assets.forEach((colAsset) => {
+                                const val = covMatrix[rowAsset][colAsset];
+                                rowHtml += `<td>${val !== undefined ? val.toFixed(8) : "—"}</td>`;
+                            });
+                            rowHtml += "</tr>";
+                            $covBody.append(rowHtml);
+                        });
+
+                        // Reinitialize DataTable for correlation matrix
+                        $covTable.DataTable({
+                            scrollX: true,
+                            paging: false,
+                            ordering: false,
+                            info: false,
+                            searching: false,
+                            scrollCollapse: true,
+                            autoWidth: false,
+                            columnDefs: [{ orderable: false, targets: "_all" }],
+                        });
+                    } else {
+                        // If no correlation data, show message
+                        $covBody.append(`<tr><td colspan="100%" class="text-center">No correlation data.</td></tr>`);
+                    }
+                },
+            });
+        });
+    });
+</script>
+
+<!-- Main Page Title -->
+<h1>Crypto Wallet Risk</h1>
+<div class="container-fluid">
+    <div class="row">
+        <!-- === Main Data Table: Asset Data === -->
+        <div class="col-6 col-md-8 col-lg-4">
+            <div class="table-responsive" style="max-height: 500px">
+                <table id="datatable" class="table table-striped table-bordered mb-1">
+                    <thead>
+                        <tr>
+                            {% for key in data.0.keys %}
+                            <th>{{ key|capfirst }}</th>
+                            {% endfor %}
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for row in data %}
+                        <tr>
+                            {% for value in row.values %}
+                            <td>{{ value }}</td>
+                            {% endfor %}
+                        </tr>
+                        {% empty %}
+                        <tr>
+                            <td colspan="100%">No data available.</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        <!-- === Portfolio Weights Form and Sharpe Ratio === -->
+        <div class="col-6 col-md-3 col-lg-3 d-flex flex-column justify-content-center">
+            <h3 class="mb-3">Portfolio Weights</h3>
+            <p>Risk-Free Rate = 4.5%</p>
+            <p>Portfolio sum doesn't need to be constrained by 100%, since leverage is a possibility</p>
+            <!-- Portfolio Weights Form -->
+            <form id="weights-form" method="post" action="{% url 'handle_form_submission' %}">
+                {% csrf_token %}
+                <div class="mb-3">
+                    <label for="BTC_USDT" class="form-label">BTC/USDT</label>
+                    <input type="number" step="any" class="form-control" id="BTC_USDT" name="weight1"
+                        placeholder="Enter %weight for BTC" />
+                </div>
+                <div class="mb-3">
+                    <label for="ETH_USDT" class="form-label">ETH/USDT</label>
+                    <input type="number" step="any" class="form-control" id="ETH_USDT" name="weight2"
+                        placeholder="Enter %weight for ETH" />
+                </div>
+                <div class="mb-3">
+                    <label for="SOL_USDT" class="form-label">SOL/USDT</label>
+                    <input type="number" step="any" class="form-control" id="SOL_USDT" name="weight3"
+                        placeholder="Enter %weight for SOL" />
+                </div>
+                <button type="submit" class="btn btn-primary mt-2">Submit</button>
+            </form>
+            <!-- Sharpe Ratio Display Box -->
+            <div class="mt-4">
+                <h5>Sharpe Ratio</h5>
+                <div id="sharpe-ratio-box" class="border rounded p-3 bg-light text-center" style="min-height: 2.5em;">
+                    <span id="sharpe-ratio-value">—</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- === Portfolio Metrics Table === -->
+        <hr />
+        <h3 class="mb-3 mt-4">Portfolio Metrics</h3>
+        <div class="table-responsive">
+            <table id="metrics-table" class="table table-bordered table-sm">
+                <caption>Portfolio Stats for a 21 day window</caption>
+                <caption>Default Stress Scenario: BTC = 20% decrease / ETH = 10% decrease / SOL = 5% decrease</caption>
+                <thead>
+                    <tr>
+                        <th>Portfolio Return</th>
+                        <th>Portfolio Volatility</th>
+                        <th>Parametric VaR 95</th>
+                        <th>Historical VaR 95</th>
+                        <th>Stressed Scenario</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td class="text-center">No data yet.</td>
+                        <td></td>
+                        <td></td>
+                        <td></td>
+                        <td></td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+        <!-- === EWMA Correlation Matrix Table === -->
+        <h3 class="mb-3 mt-4">EWMA correlation Matrix</h3>
+        <div class="table-responsive">
+            <table id="correlation-table" class="table table-bordered table-sm">
+                <thead>
+                    <tr id="correlation-header">
+                        <th>Asset</th>
+                        <!-- Column headers will be inserted here dynamically -->
+                    </tr>
+                </thead>
+                <tbody></tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}
