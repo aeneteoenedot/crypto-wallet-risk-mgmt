@@ -45,16 +45,8 @@ Make sure you have the following installed:
 - pip
 - virtualenv (recommended)
 - SQLite (default DB)
-- Node.js & npm (for Django static assets, optional)
+- django
 
-### 🔧 Installation
-
-1. **Clone the repository**
-
-```bash
-git clone https://github.com/yourusername/crypto-risk-toolkit.git
-cd crypto-risk-toolkit
-```
 
 
 
